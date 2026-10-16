@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 from discord.ui import Button, View
 import asyncio
 
@@ -7,17 +8,37 @@ import asyncio
 # הגדרות הבוט והשרת שלך - שים כאן את המספרים והטוקן ישירות!
 # =========================================================
 TOKEN = "שים_כאן_את_הטוקן_הסודי_של_הבוט_שלך"
-GUILD_ID = 1560666081574526977          # ה-ID של שרת האימות שלך
-TICKET_CATEGORY_ID = 1560666081574526977 # ה-ID של הקטגוריה שבה ייפתחו הטיקטים
-STAFF_ROLE_ID = 15606134111157581949     # ה-ID של רול הצוות (מי שיכול לתפוס טיקט)
+GUILD_ID = 1560666081574526977           # ה-ID של השרת שלך
+ALLOWED_USER_ID = 961945951780630541      # רק המשתמש הזה יכול לזמן את הפאנל
+
+# רשימת כל 24 הרולים של הצוות שיכולים לראות את הטיקטים ולתפוס אותם
+STAFF_ROLES_IDS = [
+    1560613411421818930, 1560613411421818931, 1560613411421818933,
+    1560613411421818934, 1560613411421818935, 1560613411421818937,
+    1560613411421818938, 1560613411421818939, 1560613411522347190,
+    1560613411522347191, 1560613411522347192, 1560613411522347193,
+    1560613411522347194, 1560613411522347195, 1560613411522347197,
+    1560613411522347198, 1560613411522347199, 1560613411564552342,
+    1560613411564552343, 1560613411564552344, 1560613411564552345,
+    1560613411564552346, 1560613411564552347, 1560613411564552348
+]
 # =========================================================
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.guilds = True
-intents.members = True
+class TicketBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.guilds = True
+        intents.members = True
+        super().__init__(command_prefix="!", intents=intents)
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+    async def setup_hook(self):
+        self.add_view(TicketCreateView())
+        guild = discord.Object(id=GUILD_ID)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+
+bot = TicketBot()
 
 # --- מערכת כפתורי הניהול בתוך הטיקט הפרטי ---
 class TicketControlsView(View):
@@ -29,11 +50,10 @@ class TicketControlsView(View):
     # 1. כפתור תפיסת טיקט (Claim)
     @discord.ui.button(label="✋ תפוס טיקט", style=discord.ButtonStyle.primary, custom_id="claim_ticket_btn")
     async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        staff_role = guild.get_role(STAFF_ROLE_ID)
-        
-        if staff_role not in interaction.user.roles and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ רק צוות השרת יכול לתפוס טיקטים!", ephemeral=True)
+        # בדיקה אם ללוחץ יש אחד מרולי הצוות ברשימה
+        has_staff_role = any(role.id in STAFF_ROLES_IDS for role in interaction.user.roles)
+        if not has_staff_role and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ רק צוות השרת המורשה יכול לתפוס טיקטים!", ephemeral=True)
             return
             
         if self.claimer_id:
@@ -41,6 +61,7 @@ class TicketControlsView(View):
             return
 
         self.claimer_id = interaction.user.id
+        guild = interaction.guild
         creator = guild.get_member(self.creator_id)
 
         overwrites = {
@@ -48,10 +69,15 @@ class TicketControlsView(View):
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
+        
         if creator:
             overwrites[creator] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
-        if staff_role:
-            overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=False)
+            
+        # הפיכת שאר רולי הצוות ברשימה לצופים בלבד (ללא יכולת כתיבה)
+        for role_id in STAFF_ROLES_IDS:
+            role = guild.get_role(role_id)
+            if role and role not in interaction.user.roles:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=False)
 
         await interaction.channel.edit(name=f"✋-{interaction.user.name}", overwrites=overwrites)
         await interaction.response.send_message(f"✋ הטיקט נתפס על ידי {interaction.user.mention}. שאר אנשי הצוות הועברו למצב צפייה בלבד.", ephemeral=False)
@@ -59,18 +85,16 @@ class TicketControlsView(View):
     # 2. כפתור שחרור טיקט (Unclaim)
     @discord.ui.button(label="🔓 שחרר טיקט", style=discord.ButtonStyle.secondary, custom_id="unclaim_ticket_btn")
     async def unclaim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        staff_role = guild.get_role(STAFF_ROLE_ID)
+        if not self.claimer_id:
+            await interaction.response.send_message("❌ הטיקט הזה לא תפוס על ידי אף אחד.", ephemeral=True)
+            return
 
         if interaction.user.id != self.claimer_id and not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ רק איש הצוות שתפס את הטיקט יכול לשחרר אותו!", ephemeral=True)
             return
 
-        if not self.claimer_id:
-            await interaction.response.send_message("❌ הטיקט הזה לא תפוס על ידי אף אחד.", ephemeral=True)
-            return
-
         self.claimer_id = None
+        guild = interaction.guild
         creator = guild.get_member(self.creator_id)
         creator_name = creator.name if creator else "user"
 
@@ -80,8 +104,12 @@ class TicketControlsView(View):
         }
         if creator:
             overwrites[creator] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
-        if staff_role:
-            overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+            
+        # החזרת הרשאות כתיבה לכל רולי הצוות
+        for role_id in STAFF_ROLES_IDS:
+            role = guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
 
         await interaction.channel.edit(name=f"ticket-{creator_name}", overwrites=overwrites)
         await interaction.response.send_message("🔓 הטיקט שוחרר והוחזר לכלל צוות התמיכה.", ephemeral=False)
@@ -102,24 +130,21 @@ class TicketCreateView(View):
     async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         member = interaction.user
-        category = guild.get_channel(TICKET_CATEGORY_ID)
-        staff_role = guild.get_role(STAFF_ROLE_ID)
-
-        if not category:
-            await interaction.response.send_message("שגיאה: קטגוריית הטיקטים לא נמצאה בקוד.", ephemeral=True)
-            return
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             member: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
-        if staff_role:
-            overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+        
+        # הוספת הרשאות קריאה וכתיבה לכל 24 הרולים של הצוות כשהחדר נפתח
+        for role_id in STAFF_ROLES_IDS:
+            role = guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
 
         ticket_channel = await guild.create_text_channel(
             name=f"ticket-{member.name}",
-            category=category,
             overwrites=overwrites
         )
 
@@ -134,30 +159,28 @@ class TicketCreateView(View):
 
 @bot.event
 async def on_ready():
-    print(f"🎫 {bot.user.name} מחובר ומוכן לנהל טיקטים מתקדמים!")
-    bot.add_view(TicketCreateView())
+    print(f"🎫 {bot.user.name} מחובר ומוכן לנהל טיקטים!")
 
-# פקודה להצבת פאנל הטיקטים הראשי
-@bot.command(name="setup-tickets")
-@commands.has_permissions(administrator=True)
-async def setup_tickets(ctx):
+# פקודת סלאש מודרנית (/setup-tickets)
+@bot.tree.command(name="setup-tickets", description="מציב את פאנל הטיקטים בשרת (רק למשתמש מורשה)")
+async def setup_tickets(interaction: discord.Interaction):
+    if interaction.user.id != ALLOWED_USER_ID:
+        await interaction.response.send_message("❌ אין לך הרשאה להשתמש בפקודה זו! רק הבעלים המורשה יכול לזמן את הפאנל.", ephemeral=True)
+        return
+
     embed = discord.Embed(
         title="פתיחת פנייה לצוות השרת 📩",
         description="צריך עזרה או מענה אישי? \nלחץ על הכפתור למטה כדי לפתוח חדר תמיכה פרטי.",
         color=discord.Color.blue()
     )
-    await ctx.send(embed=embed, view=TicketCreateView())
+    await interaction.response.send_message("✅ הפאנל שוגר בהצלחה!", ephemeral=True)
+    await interaction.channel.send(embed=embed, view=TicketCreateView())
 
 # פקודה להוספת אנשים לטיקט (פקודה: add @תיוג)
 @bot.command(name="add")
 async def add_user(ctx, member: discord.Member):
     if not ctx.channel.name.startswith("ticket-") and not ctx.channel.name.startswith("✋-"):
         await ctx.send("❌ ניתן להשתמש בפקודה זו רק בתוך חדר טיקט פתוח!")
-        return
-        
-    staff_role = ctx.guild.get_role(STAFF_ROLE_ID)
-    if staff_role not in ctx.author.roles and not ctx.author.guild_permissions.administrator:
-        await ctx.send("❌ רק צוות השרת יכול להוסיף אנשים לטיקט!")
         return
 
     await ctx.channel.set_permissions(member, read_messages=True, send_messages=True, attach_files=True)
