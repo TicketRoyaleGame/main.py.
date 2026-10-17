@@ -7,7 +7,7 @@ import asyncio
 from flask import Flask
 import threading
 
-# הגדרת שרת אינטרנט קטן כדי לענות ל-Render ולמנוע טעינה אינסופית
+# הגדרת שרת אינטרנט קטן בשביל הסטטוס הירוק ב-Render
 app = Flask(__name__)
 
 @app.route('/')
@@ -15,7 +15,6 @@ def home():
     return "Bot is alive!", 200
 
 def run_flask():
-    # Render מעביר אוטומטית את הפורט הנכון דרך משתנה סביבה
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
@@ -23,7 +22,8 @@ def run_flask():
 # הגדרות הבוט והשרת שלך
 # =========================================================
 TOKEN = os.getenv("TOKEN")
-ALLOWED_USER_ID = 961945951780630541      # רק המשתמש הזה יכול לזמן את הפאנל
+ALLOWED_USER_ID = 961945951780630541       # רק המשתמש הזה יכול לזמן את הפאנל
+LOG_CHANNEL_ID = 1560756016604512376       # חדר לוגי הטיקטים המעודכן שנתת לי
 
 # רשימת כל 24 הרולים של הצוות שיכולים לראות את הטיקטים ולתפוס אותם
 STAFF_ROLES_IDS = [
@@ -45,12 +45,21 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# פונקציית עזר לשליחת לוגים מעוצבים
+async def send_ticket_log(title, description, color):
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
+    if log_channel:
+        embed = discord.Embed(title=title, description=description, color=color)
+        await log_channel.send(embed=embed)
+
+# --- מערכת כפתורי הניהול בתוך הטיקט הפרטי ---
 class TicketControlsView(View):
     def __init__(self, creator_id, claimer_id=None):
         super().__init__(timeout=None)
         self.creator_id = creator_id
         self.claimer_id = claimer_id
 
+    # 1. כפתור תפיסת טיקט (Claim)
     @discord.ui.button(label="✋ תפוס טיקט", style=discord.ButtonStyle.primary, custom_id="claim_ticket_btn")
     async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         has_staff_role = any(role.id in STAFF_ROLES_IDS for role in interaction.user.roles)
@@ -82,7 +91,15 @@ class TicketControlsView(View):
 
         await interaction.channel.edit(name=f"✋-{interaction.user.name}", overwrites=overwrites)
         await interaction.response.send_message(f"✋ הטיקט נתפס על ידי {interaction.user.mention}. שאר אנשי הצוות הועברו למצב צפייה בלבד.", ephemeral=False)
+        
+        # 📌 לוג תפיסת טיקט
+        await send_ticket_log(
+            "✋ טיקט נתפס", 
+            f"**חדר:** {interaction.channel.mention}\n**נתפס על ידי:** {interaction.user.mention}\n**יוצר הטיקט:** <@{self.creator_id}>", 
+            discord.Color.orange()
+        )
 
+    # 2. כפתור שחרור טיקט (Unclaim)
     @discord.ui.button(label="🔓 שחרר טיקט", style=discord.ButtonStyle.secondary, custom_id="unclaim_ticket_btn")
     async def unclaim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.claimer_id:
@@ -93,6 +110,7 @@ class TicketControlsView(View):
             await interaction.response.send_message("❌ רק איש הצוות שתפס את הטיקט יכול לשחרר אותו!", ephemeral=True)
             return
 
+        old_claimer = self.claimer_id
         self.claimer_id = None
         guild = interaction.guild
         creator = guild.get_member(self.creator_id)
@@ -112,13 +130,30 @@ class TicketControlsView(View):
 
         await interaction.channel.edit(name=f"ticket-{creator_name}", overwrites=overwrites)
         await interaction.response.send_message("🔓 הטיקט שוחרר והוחזר לכלל צוות התמיכה.", ephemeral=False)
+        
+        # 📌 לוג שחרור טיקט
+        await send_ticket_log(
+            "🔓 טיקט שוחרר", 
+            f"**חדר:** {interaction.channel.mention}\n**המשחרר:** {interaction.user.mention}\n**היה תפוס על ידי:** <@{old_claimer}>", 
+            discord.Color.light_grey()
+        )
 
+    # 3. כפתור סגירת טיקט (Close)
     @discord.ui.button(label="🔒 סגור טיקט", style=discord.ButtonStyle.danger, custom_id="close_ticket_btn")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("🔒 הטיקט נסגר. החדר יימחק אוטומטית בעוד 5 שניות...")
+        
+        # 📌 לוג סגירת טיקט
+        await send_ticket_log(
+            "🔒 טיקט נסגר ונמחק", 
+            f"**שם החדר שנמחק:** `{interaction.channel.name}`\n**נסגר על ידי:** {interaction.user.mention}\n**יוצר הטיקט המקורי:** <@{self.creator_id}>", 
+            discord.Color.red()
+        )
+        
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
+# --- פאנל הטיקטים המרכזי ---
 class TicketCreateView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -152,10 +187,17 @@ class TicketCreateView(View):
         
         await ticket_channel.send(embed=embed, view=TicketControlsView(creator_id=member.id))
         await interaction.response.send_message(f"✅ הטיקט שלך נפתח בהצלחה! כנס לכאן: {ticket_channel.mention}", ephemeral=True)
+        
+        # 📌 לוג פתיחת טיקט
+        await send_ticket_log(
+            "📩 טיקט חדש נפתח", 
+            f"**משתמש:** {interaction.user.mention} (ID: `{interaction.user.id}`)\n**חדר הטיקט:** {ticket_channel.mention}", 
+            discord.Color.green()
+        )
 
 @bot.event
 async def on_ready():
-    print(f"🎫 {bot.user.name} מחובר בהצלחה!")
+    print(f"🎫 {bot.user.name} מחובר בהצלחה ומנטר לוגים!")
     bot.add_view(TicketCreateView())
     try:
         synced = await bot.tree.sync()
@@ -180,11 +222,3 @@ async def setup_tickets(interaction: discord.Interaction):
 @bot.command(name="add")
 async def add_user(ctx, member: discord.Member):
     if not ctx.channel.name.startswith("ticket-") and not ctx.channel.name.startswith("✋-"):
-        await ctx.send("❌ ניתן להשתמש בפקודה זו רק בתוך חדר טיקט פתוח!")
-        return
-    await ctx.channel.set_permissions(member, read_messages=True, send_messages=True, attach_files=True)
-    await ctx.send(f"✅ המשתמש {member.mention} התווסף לטיקט בהצלחה.")
-
-# הפעלת שרת האינטרנט של Flask ברקע לפני חיבור הבוט
-threading.Thread(target=run_flask, daemon=True).start()
-bot.run(TOKEN)
