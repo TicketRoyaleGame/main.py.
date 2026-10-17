@@ -6,10 +6,9 @@ from discord.ui import Button, View
 import asyncio
 
 # =========================================================
-# הגדרות הבוט והשרת שלך - שים כאן את המספרים והטוקן ישירות!
+# הגדרות הבוט והשרת שלך
 # =========================================================
 TOKEN = os.getenv("TOKEN")
-GUILD_ID = 1560666081574526977           # ה-ID של השרת שלך
 ALLOWED_USER_ID = 961945951780630541      # רק המשתמש הזה יכול לזמן את הפאנל
 
 # רשימת כל 24 הרולים של הצוות שיכולים לראות את הטיקטים ולתפוס אותם
@@ -25,21 +24,12 @@ STAFF_ROLES_IDS = [
 ]
 # =========================================================
 
-class TicketBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.guilds = True
-        intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+intents.members = True
 
-    async def setup_hook(self):
-        self.add_view(TicketCreateView())
-        guild = discord.Object(id=GUILD_ID)
-        self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
-
-bot = TicketBot()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- מערכת כפתורי הניהול בתוך הטיקט הפרטי ---
 class TicketControlsView(View):
@@ -51,7 +41,6 @@ class TicketControlsView(View):
     # 1. כפתור תפיסת טיקט (Claim)
     @discord.ui.button(label="✋ תפוס טיקט", style=discord.ButtonStyle.primary, custom_id="claim_ticket_btn")
     async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # בדיקה אם ללוחץ יש אחד מרולי הצוות ברשימה
         has_staff_role = any(role.id in STAFF_ROLES_IDS for role in interaction.user.roles)
         if not has_staff_role and not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ רק צוות השרת המורשה יכול לתפוס טיקטים!", ephemeral=True)
@@ -74,7 +63,6 @@ class TicketControlsView(View):
         if creator:
             overwrites[creator] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
             
-        # הפיכת שאר רולי הצוות ברשימה לצופים בלבד (ללא יכולת כתיבה)
         for role_id in STAFF_ROLES_IDS:
             role = guild.get_role(role_id)
             if role and role not in interaction.user.roles:
@@ -106,7 +94,6 @@ class TicketControlsView(View):
         if creator:
             overwrites[creator] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
             
-        # החזרת הרשאות כתיבה לכל רולי הצוות
         for role_id in STAFF_ROLES_IDS:
             role = guild.get_role(role_id)
             if role:
@@ -138,7 +125,6 @@ class TicketCreateView(View):
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
         
-        # הוספת הרשאות קריאה וכתיבה לכל 24 הרולים של הצוות כשהחדר נפתח
         for role_id in STAFF_ROLES_IDS:
             role = guild.get_role(role_id)
             if role:
@@ -160,13 +146,23 @@ class TicketCreateView(View):
 
 @bot.event
 async def on_ready():
-    print(f"🎫 {bot.user.name} מחובר ומוכן לנהל טיקטים!")
+    print(f"🎫 {bot.user.name} מחובר בהצלחה!")
+    
+    # שמירה על כפתורים פעילים ברקע
+    bot.add_view(TicketCreateView())
+    
+    # סנכרון פקודות גלובלי ובטוח (מונע את שגיאת ה-Forbidden)
+    try:
+        synced = await bot.tree.sync()
+        print(f"✅ סונכרנו {len(synced)} פקודות סלאש בצורה גלובלית!")
+    except Exception as e:
+        print(f"שגיאה בסנכרון פקודות: {e}")
 
 # פקודת סלאש מודרנית (/setup-tickets)
 @bot.tree.command(name="setup-tickets", description="מציב את פאנל הטיקטים בשרת (רק למשתמש מורשה)")
 async def setup_tickets(interaction: discord.Interaction):
     if interaction.user.id != ALLOWED_USER_ID:
-        await interaction.response.send_message("❌ אין לך הרשאה להשתמש בפקודה זו! רק הבעלים המורשה יכול לזמן את הפאנל.", ephemeral=True)
+        await interaction.response.send_message("❌ אין לך הרשאה להשתמש בפקודה זו!", ephemeral=True)
         return
 
     embed = discord.Embed(
@@ -185,6 +181,6 @@ async def add_user(ctx, member: discord.Member):
         return
 
     await ctx.channel.set_permissions(member, read_messages=True, send_messages=True, attach_files=True)
-    await ctx.send(f"✅ המשתמש {member.mention} התווסף לטיקט בהצלחה וקיבל גישה לחדר.")
+    await ctx.send(f"✅ המשתמש {member.mention} התווסף לטיקט בהצלחה.")
 
 bot.run(TOKEN)
