@@ -4,6 +4,20 @@ from discord.ext import commands
 from discord import app_commands
 from discord.ui import Button, View
 import asyncio
+from flask import Flask
+import threading
+
+# הגדרת שרת אינטרנט קטן כדי לענות ל-Render ולמנוע טעינה אינסופית
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!", 200
+
+def run_flask():
+    # Render מעביר אוטומטית את הפורט הנכון דרך משתנה סביבה
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 # =========================================================
 # הגדרות הבוט והשרת שלך
@@ -31,14 +45,12 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- מערכת כפתורי הניהול בתוך הטיקט הפרטי ---
 class TicketControlsView(View):
     def __init__(self, creator_id, claimer_id=None):
         super().__init__(timeout=None)
         self.creator_id = creator_id
         self.claimer_id = claimer_id
 
-    # 1. כפתור תפיסת טיקט (Claim)
     @discord.ui.button(label="✋ תפוס טיקט", style=discord.ButtonStyle.primary, custom_id="claim_ticket_btn")
     async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         has_staff_role = any(role.id in STAFF_ROLES_IDS for role in interaction.user.roles)
@@ -71,7 +83,6 @@ class TicketControlsView(View):
         await interaction.channel.edit(name=f"✋-{interaction.user.name}", overwrites=overwrites)
         await interaction.response.send_message(f"✋ הטיקט נתפס על ידי {interaction.user.mention}. שאר אנשי הצוות הועברו למצב צפייה בלבד.", ephemeral=False)
 
-    # 2. כפתור שחרור טיקט (Unclaim)
     @discord.ui.button(label="🔓 שחרר טיקט", style=discord.ButtonStyle.secondary, custom_id="unclaim_ticket_btn")
     async def unclaim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.claimer_id:
@@ -102,14 +113,12 @@ class TicketControlsView(View):
         await interaction.channel.edit(name=f"ticket-{creator_name}", overwrites=overwrites)
         await interaction.response.send_message("🔓 הטיקט שוחרר והוחזר לכלל צוות התמיכה.", ephemeral=False)
 
-    # 3. כפתור סגירת טיקט (Close)
     @discord.ui.button(label="🔒 סגור טיקט", style=discord.ButtonStyle.danger, custom_id="close_ticket_btn")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("🔒 הטיקט נסגר. החדר יימחק אוטומטית בעוד 5 שניות...")
         await asyncio.sleep(5)
         await interaction.channel.delete()
 
-# --- פאנל הטיקטים המרכזי ---
 class TicketCreateView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -147,19 +156,14 @@ class TicketCreateView(View):
 @bot.event
 async def on_ready():
     print(f"🎫 {bot.user.name} מחובר בהצלחה!")
-    
-    # שמירה על כפתורים פעילים ברקע
     bot.add_view(TicketCreateView())
-    
-    # סנכרון פקודות גלובלי ובטוח (מונע את שגיאת ה-Forbidden)
     try:
         synced = await bot.tree.sync()
-        print(f"✅ סונכרנו {len(synced)} פקודות סלאש בצורה גלובלית!")
+        print(f"✅ סונכרנו {len(synced)} פקודות סלאש!")
     except Exception as e:
         print(f"שגיאה בסנכרון פקודות: {e}")
 
-# פקודת סלאש מודרנית (/setup-tickets)
-@bot.tree.command(name="setup-tickets", description="מציב את פאנל הטיקטים בשרת (רק למשתמש מורשה)")
+@bot.tree.command(name="setup-tickets", description="מציב את פאנל הטיקטים בשרת")
 async def setup_tickets(interaction: discord.Interaction):
     if interaction.user.id != ALLOWED_USER_ID:
         await interaction.response.send_message("❌ אין לך הרשאה להשתמש בפקודה זו!", ephemeral=True)
@@ -173,14 +177,14 @@ async def setup_tickets(interaction: discord.Interaction):
     await interaction.response.send_message("✅ הפאנל שוגר בהצלחה!", ephemeral=True)
     await interaction.channel.send(embed=embed, view=TicketCreateView())
 
-# פקודה להוספת אנשים לטיקט (פקודה: add @תיוג)
 @bot.command(name="add")
 async def add_user(ctx, member: discord.Member):
     if not ctx.channel.name.startswith("ticket-") and not ctx.channel.name.startswith("✋-"):
         await ctx.send("❌ ניתן להשתמש בפקודה זו רק בתוך חדר טיקט פתוח!")
         return
-
     await ctx.channel.set_permissions(member, read_messages=True, send_messages=True, attach_files=True)
     await ctx.send(f"✅ המשתמש {member.mention} התווסף לטיקט בהצלחה.")
 
+# הפעלת שרת האינטרנט של Flask ברקע לפני חיבור הבוט
+threading.Thread(target=run_flask, daemon=True).start()
 bot.run(TOKEN)
